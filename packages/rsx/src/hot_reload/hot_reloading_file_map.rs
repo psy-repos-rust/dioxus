@@ -1,5 +1,7 @@
 use crate::{CallBody, HotReloadingContext};
 use dioxus_core::Template;
+use krates::cm::MetadataCommand;
+use krates::Cmd;
 pub use proc_macro2::TokenStream;
 pub use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,7 +15,7 @@ use syn::spanned::Spanned;
 use super::hot_reload_diff::{find_rsx, DiffResult};
 
 pub enum UpdateResult {
-    UpdatedRsx(Vec<Template<'static>>),
+    UpdatedRsx(Vec<Template>),
     NeedsRebuild,
 }
 
@@ -26,7 +28,8 @@ pub struct FileMapBuildResult<Ctx: HotReloadingContext> {
 }
 
 pub struct FileMap<Ctx: HotReloadingContext> {
-    pub map: HashMap<PathBuf, (String, Option<Template<'static>>)>,
+    pub map: HashMap<PathBuf, (String, Option<Template>)>,
+    in_workspace: HashMap<PathBuf, Option<PathBuf>>,
     phantom: std::marker::PhantomData<Ctx>,
 }
 
@@ -42,23 +45,30 @@ impl<Ctx: HotReloadingContext> FileMap<Ctx> {
         mut filter: impl FnMut(&Path) -> bool,
     ) -> io::Result<FileMapBuildResult<Ctx>> {
         struct FileMapSearchResult {
-            map: HashMap<PathBuf, (String, Option<Template<'static>>)>,
+            map: HashMap<PathBuf, (String, Option<Template>)>,
             errors: Vec<io::Error>,
         }
         fn find_rs_files(
             root: PathBuf,
             filter: &mut impl FnMut(&Path) -> bool,
-        ) -> io::Result<FileMapSearchResult> {
+        ) -> FileMapSearchResult {
             let mut files = HashMap::new();
             let mut errors = Vec::new();
             if root.is_dir() {
-                for entry in (fs::read_dir(root)?).flatten() {
+                let read_dir = match fs::read_dir(root) {
+                    Ok(read_dir) => read_dir,
+                    Err(err) => {
+                        errors.push(err);
+                        return FileMapSearchResult { map: files, errors };
+                    }
+                };
+                for entry in read_dir.flatten() {
                     let path = entry.path();
                     if !filter(&path) {
                         let FileMapSearchResult {
                             map,
                             errors: child_errors,
-                        } = find_rs_files(path, filter)?;
+                        } = find_rs_files(path, filter);
                         errors.extend(child_errors);
                         files.extend(map);
                     }
@@ -66,16 +76,23 @@ impl<Ctx: HotReloadingContext> FileMap<Ctx> {
             } else if root.extension().and_then(|s| s.to_str()) == Some("rs") {
                 if let Ok(mut file) = File::open(root.clone()) {
                     let mut src = String::new();
-                    file.read_to_string(&mut src)?;
-                    files.insert(root, (src, None));
+                    match file.read_to_string(&mut src) {
+                        Ok(_) => {
+                            files.insert(root, (src, None));
+                        }
+                        Err(err) => {
+                            errors.push(err);
+                        }
+                    }
                 }
             }
-            Ok(FileMapSearchResult { map: files, errors })
+            FileMapSearchResult { map: files, errors }
         }
 
-        let FileMapSearchResult { map, errors } = find_rs_files(path, &mut filter)?;
+        let FileMapSearchResult { map, errors } = find_rs_files(path, &mut filter);
         let result = Self {
             map,
+            in_workspace: HashMap::new(),
             phantom: std::marker::PhantomData,
         };
         Ok(FileMapBuildResult {
@@ -90,6 +107,7 @@ impl<Ctx: HotReloadingContext> FileMap<Ctx> {
         let mut src = String::new();
         file.read_to_string(&mut src)?;
         if let Ok(syntax) = syn::parse_file(&src) {
+            let in_workspace = self.child_in_workspace(crate_dir)?;
             if let Some((old_src, template_slot)) = self.map.get_mut(file_path) {
                 if let Ok(old) = syn::parse_file(old_src) {
                     match find_rsx(&syntax, &old) {
@@ -97,7 +115,7 @@ impl<Ctx: HotReloadingContext> FileMap<Ctx> {
                             self.map.insert(file_path.to_path_buf(), (src, None));
                         }
                         DiffResult::RsxChanged(changed) => {
-                            let mut messages: Vec<Template<'static>> = Vec::new();
+                            let mut messages: Vec<Template> = Vec::new();
                             for (old, new) in changed.into_iter() {
                                 let old_start = old.span().start();
 
@@ -105,7 +123,14 @@ impl<Ctx: HotReloadingContext> FileMap<Ctx> {
                                     syn::parse2::<CallBody>(old.tokens),
                                     syn::parse2::<CallBody>(new),
                                 ) {
-                                    if let Ok(file) = file_path.strip_prefix(crate_dir) {
+                                    // if the file!() macro is invoked in a workspace, the path is relative to the workspace root, otherwise it's relative to the crate root
+                                    // we need to check if the file is in a workspace or not and strip the prefix accordingly
+                                    let prefix = if let Some(workspace) = &in_workspace {
+                                        workspace
+                                    } else {
+                                        crate_dir
+                                    };
+                                    if let Ok(file) = file_path.strip_prefix(prefix) {
                                         let line = old_start.line;
                                         let column = old_start.column + 1;
                                         let location = file.display().to_string()
@@ -156,5 +181,25 @@ impl<Ctx: HotReloadingContext> FileMap<Ctx> {
             }
         }
         Ok(UpdateResult::NeedsRebuild)
+    }
+
+    fn child_in_workspace(&mut self, crate_dir: &Path) -> io::Result<Option<PathBuf>> {
+        if let Some(in_workspace) = self.in_workspace.get(crate_dir) {
+            Ok(in_workspace.clone())
+        } else {
+            let mut cmd = Cmd::new();
+            let manafest_path = crate_dir.join("Cargo.toml");
+            cmd.manifest_path(&manafest_path);
+            let cmd: MetadataCommand = cmd.into();
+            let metadata = cmd
+                .exec()
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+            let in_workspace = metadata.workspace_root != crate_dir;
+            let workspace_path = in_workspace.then(|| metadata.workspace_root.into());
+            self.in_workspace
+                .insert(crate_dir.to_path_buf(), workspace_path.clone());
+            Ok(workspace_path)
+        }
     }
 }

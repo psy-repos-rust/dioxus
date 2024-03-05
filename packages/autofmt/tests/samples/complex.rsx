@@ -6,17 +6,19 @@ rsx! {
             show_user_menu.set(!show_user_menu.get());
             evt.cancel_bubble();
         },
-        onclick: move |evt| show_user_menu.set(!show_user_menu.get()),
+        onmousedown: move |evt| show_user_menu.set(!show_user_menu.get()),
         span { class: "inline-block mr-4", icons::icon_14 {} }
         span { "Settings" }
     }
 
     // Complex nesting with handlers
     li {
-        Link { class: "flex items-center pl-3 py-3 pr-4 {active_class} rounded", to: "{to}",
+        Link {
+            class: "flex items-center pl-3 py-3 pr-4 {active_class} rounded",
+            to: "{to}",
             span { class: "inline-block mr-3", icons::icon_0 {} }
             span { "{name}" }
-            children.is_some().then(|| rsx! {
+            {children.is_some().then(|| rsx! {
                 span {
                     class: "inline-block ml-auto hover:bg-gray-500",
                     onclick: move |evt| {
@@ -25,9 +27,9 @@ rsx! {
                     },
                     icons::icon_8 {}
                 }
-            })
+            })}
         }
-        div { class: "px-4", is_current.then(|| rsx!{ children }) }
+        div { class: "px-4", {is_current.then(|| rsx!{ children })} }
     }
 
     // No nesting
@@ -46,5 +48,5 @@ rsx! {
         }
     }
 
-    div { asdbascasdbasd, asbdasbdabsd, asbdabsdbasdbas }
+    div { "asdbascasdbasd", "asbdasbdabsd", {asbdabsdbasdbas} }
 }

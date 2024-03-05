@@ -1,4 +1,4 @@
-<div align="center">
+<div style="text-align: center">
   <h1>🌗🚀 Dioxus</h1>
   <p>
     <strong>A concurrent, functional, virtual DOM for Rust</strong>
@@ -9,8 +9,8 @@
 
 This overview provides a brief introduction to Dioxus. For a more in-depth guide, make sure to check out:
 
-- [Getting Started](https://dioxuslabs.com/docs/0.3/guide/en/getting_started/index.html)
-- [Book](https://dioxuslabs.com/docs/0.3/guide/en/)
+- [Getting Started](https://dioxuslabs.com/learn/0.4/getting_started)
+- [Book (0.4)](https://dioxuslabs.com/learn/0.4/)
 - [Examples](https://github.com/DioxusLabs/example-projects)
 
 # Overview and Goals
@@ -27,15 +27,15 @@ Dioxus is heavily inspired by React, supporting many of the same concepts:
 
 If you know React, then you know Dioxus.
 
-Dioxus is *substantially* more performant than many of the other Rust UI libraries (Yew/Percy) and is *significantly* more performant
-than React - roughly competitive with InfernoJS.
+Dioxus is _substantially_ more performant than many of the other Rust UI libraries (Yew/Percy) and is _significantly_ more performant
+than React—roughly competitive with InfernoJS.
 
-Remember: Dioxus is a library for declaring interactive user interfaces - it is not a dedicated renderer. Most 1st party renderers for Dioxus currently only support web technologies.
+Remember: Dioxus is a library for declaring interactive user interfaces—it is not a dedicated renderer. Most 1st party renderers for Dioxus currently only support web technologies.
 
 ## Brief Overview
 
 All Dioxus apps are built by composing functions that take in a `Scope` which is generic over some `Properties` and return an `Element`.
-A `Scope` holds relevant state data for the currently-rendered component.
+A `Scope` holds relevant state data for the currently rendered component.
 
 To launch an app, we use the `launch` method for the specific renderer we want to use. In the launch function, we pass the app's `Component`.
 
@@ -43,11 +43,14 @@ To launch an app, we use the `launch` method for the specific renderer we want t
 use dioxus::prelude::*;
 
 fn main() {
-    dioxus_desktop::launch(app);
+    dioxus_desktop::launch(App);
 }
 
-fn app(cx: Scope) -> Element {
-    cx.render(rsx!("hello world!"))
+// The #[component] attribute streamlines component creation.
+// It's not required, but highly recommended. For example, UpperCamelCase components will not generate a warning.
+#[component]
+fn App() -> Element {
+    rsx!("hello world!")
 }
 ```
 
@@ -59,7 +62,7 @@ macro or the NodeFactory API. For the most part, you want to use the `rsx!`
 macro.
 
 Any element in `rsx!` can have attributes, listeners, and children. For
-consistency, we force all attributes and listeners to be listed *before*
+consistency, we force all attributes and listeners to be listed _before_
 children.
 
 ```rust, ignore
@@ -84,7 +87,6 @@ rsx!(
         (0..10).map(|_| rsx!(span { "hello world" }))
     }
 )
-
 ```
 
 Used within components, the `rsx!` macro must be rendered into an `Element` with
@@ -95,12 +97,12 @@ If we want to omit the boilerplate of `cx.render`, we can simply pass in
 render nodes in match statements.
 
 ```rust, ignore
-fn example(cx: Scope) -> Element {
-
+#[component]
+fn Example() -> Element {
     // both of these are equivalent
-    cx.render(rsx!("hello world"))
+    rsx!("hello world");
 
-    render!("hello world!")
+    rsx!("hello world!");
 }
 ```
 
@@ -108,9 +110,10 @@ Putting everything together, we can write a simple component that renders a list
 elements:
 
 ```rust, ignore
-fn app(cx: Scope) -> Element {
+#[component]
+fn App() -> Element {
     let name = "dave";
-    cx.render(rsx!(
+    rsx!(
         h1 { "Hello, {name}!" }
         div {
             class: "my-class",
@@ -123,7 +126,7 @@ fn app(cx: Scope) -> Element {
             ))
 
         }
-    ))
+    )
 }
 ```
 
@@ -136,13 +139,14 @@ properties, we can use the `()` type or simply omit the type altogether.
 In Dioxus, all properties are memoized by default!
 
 ```rust, ignore
-fn App(cx: Scope) -> Element {
-    cx.render(rsx!(
+#[component]
+fn App() -> Element {
+    rsx!(
         Header {
             title: "My App",
             color: "red",
         }
-    ))
+    )
 }
 ```
 
@@ -157,33 +161,35 @@ struct HeaderProps {
     color: String,
 }
 
+#[component]
 fn Header(cx: Scope<HeaderProps>) -> Element {
-    cx.render(rsx!(
+    rsx!(
         div {
             background_color: "{cx.props.color}"
             h1 { "{cx.props.title}" }
         }
-    ))
+    )
 }
 ```
 
-Components may use the `inline_props` macro to completely inline the props
-definition into the function arguments.
+The `#[component]` macro also allows you to derive the props
+struct from function arguments:
 
 ```rust, ignore
-#[inline_props]
-fn Header(cx: Scope, title: String, color: String) -> Element {
-    cx.render(rsx!(
+#[component]
+fn Header(title: String, color: String) -> Element {
+    rsx!(
         div {
             background_color: "{color}"
             h1 { "{title}" }
         }
-    ))
+    )
 }
 ```
 
 Components may also borrow data from their parent component. We just need to
 attach some lifetimes to the props struct.
+
 > Note: we don't need to derive `PartialEq` for borrowed props since they cannot be memoized.
 
 ```rust, ignore
@@ -193,13 +199,14 @@ struct HeaderProps<'a> {
     color: &'a str,
 }
 
-fn Header<'a>(cx: Scope<'a, HeaderProps<'a>>) -> Element {
-    cx.render(rsx!(
+#[component]
+fn Header(props: HeaderProps) -> Element {
+    rsx!(
         div {
             background_color: "{cx.props.color}"
             h1 { "{cx.props.title}" }
         }
-    ))
+    )
 }
 ```
 
@@ -221,6 +228,9 @@ rsx!(
 )
 ```
 
+However, the convention is to use UpperCamelCase. The `#[component]` attribute will enforce this,
+but you can turn it off if you wish.
+
 ## Hooks
 
 While components are reusable forms of UI elements, hooks are reusable forms
@@ -231,18 +241,20 @@ By convention, all hooks are functions that should start with `use_`. We can
 use hooks to define the state and modify it from within listeners.
 
 ```rust, ignore
-fn app(cx: Scope) -> Element {
-    let name = use_state(cx, || "world");
+#[component]
+fn App() -> Element {
+    let name = use_signal(|| "world");
 
-    render!("hello {name}!")
+    rsx!("hello {name}!")
 }
 ```
 
 Hooks are sensitive to how they are used. To use hooks, you must abide by the
-["rules of hooks" (borrowed from react)](https://reactjs.org/docs/hooks-rules.html):
-- Functions with "use_" should not be called in callbacks
-- Functions with "use_" should not be called out of order
-- Functions with "use_" should not be called in loops or conditionals
+["rules of hooks" (borrowed from React)](https://reactjs.org/docs/hooks-rules.html):
+
+- Functions with "use\_" should not be called in callbacks
+- Functions with "use\_" should not be called out of order
+- Functions with "use\_" should not be called in loops or conditionals
 
 In a sense, hooks let us add a field of state to our component without declaring
 an explicit state struct. However, this means we need to "load" the struct in the right
@@ -251,8 +263,8 @@ order. If that order is wrong, then the hook will pick the wrong state and panic
 Most hooks you'll write are simply compositions of other hooks:
 
 ```rust, ignore
-fn use_username(cx: &ScopeState, id: Uuid) -> bool {
-    let users = use_context::<Users>(cx);
+fn use_username(d: Uuid) -> bool {
+    let users = use_context::<Users>();
     users.get(&id).map(|user| user.logged_in).ok_or(false)
 }
 ```
@@ -260,7 +272,7 @@ fn use_username(cx: &ScopeState, id: Uuid) -> bool {
 To create entirely new foundational hooks, we can use the `use_hook` method on `ScopeState`.
 
 ```rust, ignore
-fn use_mut_string(cx: &ScopeState) -> &mut String {
+fn use_mut_string() -> &mut String {
     cx.use_hook(|_| "Hello".to_string())
 }
 ```
@@ -278,14 +290,15 @@ fn main() {
     dioxus_desktop::launch(App);
 }
 
-fn App(cx: Scope) -> Element {
-    let count = use_state(cx, || 0);
+#[component]
+fn App() -> Element {
+    let count = use_signal(|| 0);
 
-    cx.render(rsx!(
+    rsx!(
         div { "Count: {count}" }
         button { onclick: move |_| count.set(count + 1), "Increment" }
         button { onclick: move |_| count.set(count - 1), "Decrement" }
-    ))
+    )
 }
 ```
 
@@ -295,6 +308,7 @@ This overview doesn't cover everything. Make sure to check out the tutorial and 
 website for more details.
 
 Beyond this overview, Dioxus supports:
+
 - Server-side rendering
 - Concurrent rendering (with async support)
 - Web/Desktop/Mobile support
@@ -311,14 +325,16 @@ Good luck!
 ## Inspiration, Resources, Alternatives, and Credits
 
 Dioxus is inspired by:
+
 - React: for its hooks, concurrency, suspense
 - Dodrio: for its research in bump allocation, double buffering, and diffing architecture
 
 Alternatives to Dioxus include:
+
 - Yew: supports function components and web, but no SSR, borrowed data, or bump allocation. Rather slow at times.
 - Percy: supports function components, web, ssr, but lacks state management
 - Sycamore: supports function components, web, ssr, but is closer to SolidJS than React
-- MoonZoom/Seed: opinionated frameworks based on the Elm model (message, update) - no hooks
+- MoonZoom/Seed: opinionated frameworks based on the Elm model (message, update)—no hooks
 
-We've put a lot of work into making Dioxus ergonomic and *familiar*.
-Our target audience is TypeScript developers looking to switch to Rust for the web - so we need to be comparable to React.
+We've put a lot of work into making Dioxus ergonomic and _familiar_.
+Our target audience is TypeScript developers looking to switch to Rust for the web—so we need to be comparable to React.

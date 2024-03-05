@@ -1,8 +1,13 @@
-use crate::RouterContext;
-use dioxus::{core::ScopeState, prelude::use_context};
+use crate::{prelude::RouterContext, utils::use_router_internal::use_router_internal};
 
-/// This hook provides access to the `RouterService` for the app.
-pub fn use_router(cx: &ScopeState) -> &RouterContext {
-    use_context::<RouterContext>(cx)
-        .expect("Cannot call use_route outside the scope of a Router component")
+#[deprecated = "prefer the `router()` function or `use_route` functions"]
+#[must_use]
+/// A hook that provides access to information about the router.
+pub fn use_router() -> RouterContext {
+    use_router_internal().expect("use_route must have access to a router")
+}
+
+/// Aquire the router without subscribing to updates.
+pub fn router() -> RouterContext {
+    dioxus_lib::prelude::consume_context()
 }

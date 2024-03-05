@@ -8,11 +8,14 @@ use std::fmt::{Result, Write};
 
 use dioxus_rsx::IfmtInput;
 
+use crate::{indent::IndentOptions, write_ifmt};
+
 /// The output buffer that tracks indent and string
 #[derive(Debug, Default)]
 pub struct Buffer {
     pub buf: String,
-    pub indent: usize,
+    pub indent_level: usize,
+    pub indent: IndentOptions,
 }
 
 impl Buffer {
@@ -29,16 +32,16 @@ impl Buffer {
     }
 
     pub fn tab(&mut self) -> Result {
-        self.write_tabs(self.indent)
+        self.write_tabs(self.indent_level)
     }
 
     pub fn indented_tab(&mut self) -> Result {
-        self.write_tabs(self.indent + 1)
+        self.write_tabs(self.indent_level + 1)
     }
 
     pub fn write_tabs(&mut self, num: usize) -> std::fmt::Result {
         for _ in 0..num {
-            write!(self.buf, "    ")?
+            write!(self.buf, "{}", self.indent.indent_str())?
         }
         Ok(())
     }
@@ -48,7 +51,7 @@ impl Buffer {
     }
 
     pub fn write_text(&mut self, text: &IfmtInput) -> Result {
-        write!(self.buf, "\"{}\"", text.source.as_ref().unwrap().value())
+        write_ifmt(text, &mut self.buf)
     }
 }
 

@@ -1,151 +1,86 @@
 use crate::{
-    any_props::AnyProps,
-    bump_frame::BumpFrame,
-    innerlude::DirtyScope,
-    innerlude::{SuspenseHandle, SuspenseId, SuspenseLeaf},
+    any_props::{AnyProps, BoxedAnyProps},
+    innerlude::{DirtyScope, ScopeState},
     nodes::RenderReturn,
-    scopes::{ScopeId, ScopeState},
+    scope_context::Scope,
+    scopes::ScopeId,
     virtual_dom::VirtualDom,
-};
-use futures_util::FutureExt;
-use std::{
-    mem,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
 };
 
 impl VirtualDom {
-    pub(super) fn new_scope(
-        &mut self,
-        props: Box<dyn AnyProps<'static>>,
-        name: &'static str,
-    ) -> &ScopeState {
-        let parent = self.acquire_current_scope_raw();
+    pub(super) fn new_scope(&mut self, props: BoxedAnyProps, name: &'static str) -> &ScopeState {
+        let parent_id = self.runtime.current_scope_id();
+        let height = parent_id
+            .and_then(|parent_id| self.runtime.get_state(parent_id).map(|f| f.height + 1))
+            .unwrap_or(0);
         let entry = self.scopes.vacant_entry();
-        let height = unsafe { parent.map(|f| (*f).height + 1).unwrap_or(0) };
-        let id = entry.key();
+        let id = ScopeId(entry.key());
 
-        entry.insert(ScopeState {
-            parent,
-            id,
-            height,
-            name,
-            props: Some(props),
-            tasks: self.scheduler.clone(),
-            placeholder: Default::default(),
-            node_arena_1: BumpFrame::new(0),
-            node_arena_2: BumpFrame::new(0),
-            spawned_tasks: Default::default(),
-            render_cnt: Default::default(),
-            hook_arena: Default::default(),
-            hook_list: Default::default(),
-            hook_idx: Default::default(),
-            shared_contexts: Default::default(),
-            borrowed_props: Default::default(),
-            attributes_to_drop: Default::default(),
-        })
+        let scope = entry.insert(ScopeState {
+            runtime: self.runtime.clone(),
+            context_id: id,
+            props,
+            last_rendered_node: Default::default(),
+        });
+
+        self.runtime
+            .create_scope(Scope::new(name, id, parent_id, height));
+
+        scope
     }
 
-    fn acquire_current_scope_raw(&self) -> Option<*const ScopeState> {
-        let id = self.scope_stack.last().copied()?;
-        let scope = self.scopes.get(id)?;
-        Some(scope)
-    }
+    pub(crate) fn run_scope(&mut self, scope_id: ScopeId) -> RenderReturn {
+        debug_assert!(
+            crate::Runtime::current().is_some(),
+            "Must be in a dioxus runtime"
+        );
 
-    pub(crate) fn run_scope(&mut self, scope_id: ScopeId) -> &RenderReturn {
-        // Cycle to the next frame and then reset it
-        // This breaks any latent references, invalidating every pointer referencing into it.
-        // Remove all the outdated listeners
-        self.ensure_drop_safety(scope_id);
+        self.runtime.scope_stack.borrow_mut().push(scope_id);
+        let scope = &self.scopes[scope_id.0];
+        let new_nodes = {
+            let context = scope.state();
 
-        let mut new_nodes = unsafe {
-            self.scopes[scope_id].previous_frame().bump_mut().reset();
+            context.suspended.set(false);
+            context.hook_index.set(0);
 
-            let scope = &self.scopes[scope_id];
-
-            scope.hook_idx.set(0);
+            // Run all pre-render hooks
+            for pre_run in context.before_render.borrow_mut().iter_mut() {
+                pre_run();
+            }
 
             // safety: due to how we traverse the tree, we know that the scope is not currently aliased
-            let props: &dyn AnyProps = scope.props.as_ref().unwrap().as_ref();
-            let props: &dyn AnyProps = mem::transmute(props);
+            let props: &dyn AnyProps = &*scope.props;
 
-            props.render(scope).extend_lifetime()
+            let span = tracing::trace_span!("render", scope = %scope.state().name);
+            span.in_scope(|| props.render())
         };
 
-        // immediately resolve futures that can be resolved
-        if let RenderReturn::Pending(task) = &mut new_nodes {
-            let mut leaves = self.scheduler.leaves.borrow_mut();
+        let context = scope.state();
 
-            let entry = leaves.vacant_entry();
-            let suspense_id = SuspenseId(entry.key());
-
-            let leaf = SuspenseLeaf {
-                scope_id,
-                task: task.as_mut(),
-                notified: Default::default(),
-                waker: futures_util::task::waker(Arc::new(SuspenseHandle {
-                    id: suspense_id,
-                    tx: self.scheduler.sender.clone(),
-                })),
-            };
-
-            let mut cx = Context::from_waker(&leaf.waker);
-
-            // safety: the task is already pinned in the bump arena
-            let mut pinned = unsafe { Pin::new_unchecked(task.as_mut()) };
-
-            // Keep polling until either we get a value or the future is not ready
-            loop {
-                match pinned.poll_unpin(&mut cx) {
-                    // If nodes are produced, then set it and we can break
-                    Poll::Ready(nodes) => {
-                        new_nodes = match nodes {
-                            Some(nodes) => RenderReturn::Ready(nodes),
-                            None => RenderReturn::default(),
-                        };
-
-                        break;
-                    }
-
-                    // If no nodes are produced but the future woke up immediately, then try polling it again
-                    // This circumvents things like yield_now, but is important is important when rendering
-                    // components that are just a stream of immediately ready futures
-                    _ if leaf.notified.get() => {
-                        leaf.notified.set(false);
-                        continue;
-                    }
-
-                    // If no nodes are produced, then we need to wait for the future to be woken up
-                    // Insert the future into fiber leaves and break
-                    _ => {
-                        entry.insert(leaf);
-                        self.collected_leaves.push(suspense_id);
-                        break;
-                    }
-                };
-            }
-        };
-
-        let scope = &self.scopes[scope_id];
-
-        // We write on top of the previous frame and then make it the current by pushing the generation forward
-        let frame = scope.previous_frame();
-
-        // set the new head of the bump frame
-        let allocated = &*frame.bump().alloc(new_nodes);
-        frame.node.set(allocated);
+        // Run all post-render hooks
+        for post_run in context.after_render.borrow_mut().iter_mut() {
+            post_run();
+        }
 
         // And move the render generation forward by one
-        scope.render_cnt.set(scope.render_cnt.get() + 1);
+        context.render_count.set(context.render_count.get() + 1);
 
         // remove this scope from dirty scopes
         self.dirty_scopes.remove(&DirtyScope {
-            height: scope.height,
-            id: scope.id,
+            height: context.height,
+            id: context.id,
         });
 
-        // rebind the lifetime now that its stored internally
-        unsafe { allocated.extend_lifetime_ref() }
+        if context.suspended.get() {
+            if matches!(new_nodes, RenderReturn::Aborted(_)) {
+                self.suspended_scopes.insert(context.id);
+            }
+        } else if !self.suspended_scopes.is_empty() {
+            _ = self.suspended_scopes.remove(&context.id);
+        }
+
+        self.runtime.scope_stack.borrow_mut().pop();
+
+        new_nodes
     }
 }

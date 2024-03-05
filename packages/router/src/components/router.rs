@@ -1,59 +1,97 @@
-use crate::{cfg::RouterCfg, RouterContext, RouterService};
-use dioxus::prelude::*;
+use dioxus_lib::prelude::*;
 
-/// The props for the [`Router`](fn.Router.html) component.
-#[derive(Props)]
-pub struct RouterProps<'a> {
-    /// The routes and elements that should be rendered when the path matches.
-    ///
-    /// If elements are not contained within Routes, the will be rendered
-    /// regardless of the path.
-    pub children: Element<'a>,
+use std::{cell::RefCell, rc::Rc, str::FromStr};
 
-    /// The URL to point at
-    ///
-    /// This will be used to trim any latent segments from the URL when your app is
-    /// not deployed to the root of the domain.
-    pub base_url: Option<&'a str>,
+use crate::{prelude::Outlet, routable::Routable, router_cfg::RouterConfig};
 
-    /// Hook into the router when the route is changed.
-    ///
-    /// This lets you easily implement redirects
-    #[props(default)]
-    pub onchange: EventHandler<'a, RouterContext>,
-
-    /// Set the active class of all Link components contained in this router.
-    ///
-    /// This is useful if you don't want to repeat the same `active_class` prop value in every Link.
-    /// By default set to `"active"`.
-    pub active_class: Option<&'a str>,
-
-    /// Set the initial url.
-    pub initial_url: Option<String>,
+/// The config for [`Router`].
+#[derive(Clone)]
+pub struct RouterConfigFactory<R: Routable> {
+    #[allow(clippy::type_complexity)]
+    config: Rc<RefCell<Option<Box<dyn FnOnce() -> RouterConfig<R>>>>>,
 }
 
-/// A component that conditionally renders children based on the current location of the app.
-///
-/// Uses BrowserRouter in the browser and HashRouter everywhere else.
-///
-/// Will fallback to HashRouter is BrowserRouter is not available, or through configuration.
-#[allow(non_snake_case)]
-pub fn Router<'a>(cx: Scope<'a, RouterProps<'a>>) -> Element {
-    let svc = cx.use_hook(|| {
-        cx.provide_context(RouterService::new(
-            cx,
-            RouterCfg {
-                base_url: cx.props.base_url.map(|s| s.to_string()),
-                active_class: cx.props.active_class.map(|s| s.to_string()),
-                initial_url: cx.props.initial_url.clone(),
-            },
-        ))
+impl<R: Routable> Default for RouterConfigFactory<R>
+where
+    <R as FromStr>::Err: std::fmt::Display,
+{
+    fn default() -> Self {
+        Self::from(RouterConfig::default)
+    }
+}
+
+impl<R: Routable, F: FnOnce() -> RouterConfig<R> + 'static> From<F> for RouterConfigFactory<R> {
+    fn from(value: F) -> Self {
+        Self {
+            config: Rc::new(RefCell::new(Some(Box::new(value)))),
+        }
+    }
+}
+
+/// The props for [`Router`].
+#[derive(Props)]
+pub struct RouterProps<R: Routable>
+where
+    <R as FromStr>::Err: std::fmt::Display,
+{
+    #[props(default, into)]
+    config: RouterConfigFactory<R>,
+}
+
+impl<T: Routable> Clone for RouterProps<T>
+where
+    <T as FromStr>::Err: std::fmt::Display,
+{
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+        }
+    }
+}
+
+impl<R: Routable> Default for RouterProps<R>
+where
+    <R as FromStr>::Err: std::fmt::Display,
+{
+    fn default() -> Self {
+        Self {
+            config: RouterConfigFactory::default(),
+        }
+    }
+}
+
+impl<R: Routable> PartialEq for RouterProps<R>
+where
+    <R as FromStr>::Err: std::fmt::Display,
+{
+    fn eq(&self, _: &Self) -> bool {
+        // prevent the router from re-rendering when the initial url or config changes
+        true
+    }
+}
+
+/// A component that renders the current route.
+pub fn Router<R: Routable + Clone>(props: RouterProps<R>) -> Element
+where
+    <R as FromStr>::Err: std::fmt::Display,
+{
+    use crate::prelude::{outlet::OutletContext, RouterContext};
+
+    use_hook(|| {
+        provide_context(RouterContext::new(
+            (props
+                .config
+                .config
+                .take()
+                .expect("use_context_provider ran twice"))(),
+            schedule_update_any(),
+        ));
+
+        provide_context(OutletContext::<R> {
+            current_level: 0,
+            _marker: std::marker::PhantomData,
+        });
     });
 
-    // next time we run the rout_found will be filled
-    if svc.route_found.get().is_none() {
-        cx.props.onchange.call(svc.clone());
-    }
-
-    cx.render(rsx!(&cx.props.children))
+    rsx! { Outlet::<R> {} }
 }

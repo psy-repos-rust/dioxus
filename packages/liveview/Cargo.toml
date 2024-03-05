@@ -1,59 +1,49 @@
 [package]
 name = "dioxus-liveview"
-version = "0.3.0"
+version = { workspace = true }
 edition = "2021"
 repository = "https://github.com/DioxusLabs/dioxus/"
-homepage = "https://dioxuslabs.com"
-documentation = "https://dioxuslabs.com"
+homepage = "https://dioxuslabs.com/learn/0.4/getting_started/liveview"
 keywords = ["dom", "ui", "gui", "react", "liveview"]
 description = "Build server-side apps with Dioxus"
-license = "MIT/Apache-2.0"
-
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Jonathan Kelley", "Evan Almloff"]
+license = "MIT OR Apache-2.0"
 
 [dependencies]
-thiserror = "1.0.38"
-futures-util = { version = "0.3.25", default-features = false, features = [
+thiserror = { workspace = true }
+tracing = { workspace = true }
+slab = { workspace = true }
+futures-util = { workspace = true, default-features = false, features = [
     "sink",
 ] }
-futures-channel = { version = "0.3.25", features = ["sink"] }
-tokio = { version = "1.22.0", features = ["time"] }
+futures-channel = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros"] }
 tokio-stream = { version = "0.1.11", features = ["net"] }
 tokio-util = { version = "0.7.4", features = ["rt"] }
 serde = { version = "1.0.151", features = ["derive"] }
 serde_json = "1.0.91"
-dioxus-html = { path = "../html", features = ["serialize"], version = "^0.3.0" }
-dioxus-core = { path = "../core", features = ["serialize"], version = "^0.3.0" }
-dioxus-interpreter-js = { path = "../interpreter", version = "0.3.0" }
-dioxus-hot-reload = { path = "../hot-reload", optional = true }
-
-# warp
-warp = { version = "0.3.3", optional = true }
+dioxus-html = { workspace = true, features = ["serialize", "eval", "mounted"] }
+rustc-hash = { workspace = true }
+minify-js = "0.5.6"
+dioxus-core = { workspace = true, features = ["serialize"] }
+dioxus-interpreter-js = { workspace = true, features = ["binary-protocol"] }
+dioxus-hot-reload = { workspace = true, optional = true }
+dioxus-cli-config = { workspace = true }
+generational-box = { workspace = true }
 
 # axum
-axum = { version = "0.6.1", optional = true, features = ["ws"] }
-
-# salvo
-salvo = { version = "0.37.7", optional = true, features = ["ws"] }
-
-# actix is ... complicated?
-# actix-files = { version = "0.6.2", optional = true }
-# actix-web = { version = "4.2.1", optional = true }
-# actix-ws = { version = "0.2.5", optional = true }
+axum = { workspace = true, optional = true, features = ["ws"] }
 
 [dev-dependencies]
-pretty_env_logger = { version = "0.4.0" }
-tokio = { version = "1.22.0", features = ["full"] }
-dioxus = { path = "../dioxus", version = "0.3.0" }
-warp = "0.3.3"
-axum = { version = "0.6.1", features = ["ws"] }
-salvo = { version = "0.37.7", features = ["affix", "ws"] }
-tower = "0.4.13"
+pretty_env_logger = { version = "0.5.0" }
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true, features = ["ws"] }
+tower = { workspace = true }
+dioxus = { workspace = true }
 
 [features]
 default = ["hot-reload"]
-# actix = ["actix-files", "actix-web", "actix-ws"]
+axum = ["dep:axum"]
 hot-reload = ["dioxus-hot-reload"]
 
 [[example]]
@@ -61,9 +51,5 @@ name = "axum"
 required-features = ["axum"]
 
 [[example]]
-name = "salvo"
-required-features = ["salvo"]
-
-[[example]]
-name = "warp"
-required-features = ["warp"]
+name = "axum_stress"
+required-features = ["axum"]

@@ -1,6 +1,7 @@
-use crate::Writer;
+use crate::{ifmt_to_string, Writer};
 use dioxus_rsx::*;
 use proc_macro2::Span;
+use quote::ToTokens;
 use std::{
     fmt::Result,
     fmt::{self, Write},
@@ -47,8 +48,8 @@ impl Writer<'_> {
             key,
             attributes,
             children,
-            _is_static,
             brace,
+            ..
         } = el;
 
         /*
@@ -66,7 +67,7 @@ impl Writer<'_> {
 
         // check if we have a lot of attributes
         let attr_len = self.is_short_attrs(attributes);
-        let is_short_attr_list = (attr_len + self.out.indent * 4) < 80;
+        let is_short_attr_list = (attr_len + self.out.indent_level * 4) < 80;
         let children_len = self.is_short_children(children);
         let is_small_children = children_len.is_some();
 
@@ -86,7 +87,7 @@ impl Writer<'_> {
 
         // if we have few children and few attributes, make it a one-liner
         if is_short_attr_list && is_small_children {
-            if children_len.unwrap() + attr_len + self.out.indent * 4 < 100 {
+            if children_len.unwrap() + attr_len + self.out.indent_level * 4 < 100 {
                 opt_level = ShortOptimization::Oneliner;
             } else {
                 opt_level = ShortOptimization::PropsOnTop;
@@ -102,7 +103,7 @@ impl Writer<'_> {
         }
 
         // multiline handlers bump everything down
-        if attr_len > 1000 {
+        if attr_len > 1000 || self.out.indent.split_line_attributes() {
             opt_level = ShortOptimization::NoOpt;
         }
 
@@ -165,7 +166,7 @@ impl Writer<'_> {
 
     fn write_attributes(
         &mut self,
-        attributes: &[ElementAttrNamed],
+        attributes: &[AttributeType],
         key: &Option<IfmtInput>,
         sameline: bool,
     ) -> Result {
@@ -175,11 +176,7 @@ impl Writer<'_> {
             if !sameline {
                 self.out.indented_tabbed_line()?;
             }
-            write!(
-                self.out,
-                "key: \"{}\"",
-                key.source.as_ref().unwrap().value()
-            )?;
+            write!(self.out, "key: {}", ifmt_to_string(key))?;
             if !attributes.is_empty() {
                 write!(self.out, ",")?;
                 if sameline {
@@ -189,11 +186,11 @@ impl Writer<'_> {
         }
 
         while let Some(attr) = attr_iter.next() {
-            self.out.indent += 1;
+            self.out.indent_level += 1;
             if !sameline {
-                self.write_comments(attr.attr.start())?;
+                self.write_comments(attr.start())?;
             }
-            self.out.indent -= 1;
+            self.out.indent_level -= 1;
 
             if !sameline {
                 self.out.indented_tabbed_line()?;
@@ -213,46 +210,70 @@ impl Writer<'_> {
         Ok(())
     }
 
-    fn write_attribute(&mut self, attr: &ElementAttrNamed) -> Result {
-        match &attr.attr {
-            ElementAttr::AttrText { name, value } => {
+    fn write_attribute_name(&mut self, attr: &ElementAttrName) -> Result {
+        match attr {
+            ElementAttrName::BuiltIn(name) => {
+                write!(self.out, "{}", name)?;
+            }
+            ElementAttrName::Custom(name) => {
+                write!(self.out, "{}", name.to_token_stream())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_attribute_value(&mut self, value: &ElementAttrValue) -> Result {
+        match value {
+            ElementAttrValue::AttrOptionalExpr { condition, value } => {
                 write!(
                     self.out,
-                    "{name}: \"{value}\"",
-                    value = value.source.as_ref().unwrap().value()
+                    "if {condition} {{ ",
+                    condition = prettyplease::unparse_expr(condition),
                 )?;
+                self.write_attribute_value(value)?;
+                write!(self.out, " }}")?;
             }
-            ElementAttr::AttrExpression { name, value } => {
+            ElementAttrValue::AttrLiteral(value) => {
+                write!(self.out, "{value}", value = ifmt_to_string(value))?;
+            }
+            ElementAttrValue::Shorthand(value) => {
+                write!(self.out, "{value}",)?;
+            }
+            ElementAttrValue::AttrExpr(value) => {
                 let out = prettyplease::unparse_expr(value);
-                write!(self.out, "{name}: {out}")?;
-            }
-
-            ElementAttr::CustomAttrText { name, value } => {
-                write!(
-                    self.out,
-                    "\"{name}\": \"{value}\"",
-                    name = name.value(),
-                    value = value.source.as_ref().unwrap().value()
-                )?;
-            }
-
-            ElementAttr::CustomAttrExpression { name, value } => {
-                let out = prettyplease::unparse_expr(value);
-                write!(self.out, "\"{}\": {}", name.value(), out)?;
-            }
-
-            ElementAttr::EventTokens { name, tokens } => {
-                let out = self.retrieve_formatted_expr(tokens).to_string();
-
                 let mut lines = out.split('\n').peekable();
                 let first = lines.next().unwrap();
 
                 // a one-liner for whatever reason
                 // Does not need a new line
                 if lines.peek().is_none() {
-                    write!(self.out, "{name}: {first}")?;
+                    write!(self.out, "{first}")?;
                 } else {
-                    writeln!(self.out, "{name}: {first}")?;
+                    writeln!(self.out, "{first}")?;
+
+                    while let Some(line) = lines.next() {
+                        self.out.indented_tab()?;
+                        write!(self.out, "{line}")?;
+                        if lines.peek().is_none() {
+                            write!(self.out, "")?;
+                        } else {
+                            writeln!(self.out)?;
+                        }
+                    }
+                }
+            }
+            ElementAttrValue::EventTokens(tokens) => {
+                let out = self.retrieve_formatted_expr(tokens).to_string();
+                let mut lines = out.split('\n').peekable();
+                let first = lines.next().unwrap();
+
+                // a one-liner for whatever reason
+                // Does not need a new line
+                if lines.peek().is_none() {
+                    write!(self.out, "{first}")?;
+                } else {
+                    writeln!(self.out, "{first}")?;
 
                     while let Some(line) = lines.next() {
                         self.out.indented_tab()?;
@@ -270,21 +291,46 @@ impl Writer<'_> {
         Ok(())
     }
 
+    fn write_attribute(&mut self, attr: &AttributeType) -> Result {
+        match attr {
+            AttributeType::Named(attr) => self.write_named_attribute(attr),
+            AttributeType::Spread(attr) => self.write_spread_attribute(attr),
+        }
+    }
+
+    fn write_named_attribute(&mut self, attr: &ElementAttrNamed) -> Result {
+        self.write_attribute_name(&attr.attr.name)?;
+        write!(self.out, ": ")?;
+        self.write_attribute_value(&attr.attr.value)?;
+
+        Ok(())
+    }
+
+    fn write_spread_attribute(&mut self, attr: &Expr) -> Result {
+        write!(self.out, "..")?;
+        write!(self.out, "{}", prettyplease::unparse_expr(attr))?;
+
+        Ok(())
+    }
+
     // make sure the comments are actually relevant to this element.
     // test by making sure this element is the primary element on this line
     pub fn current_span_is_primary(&self, location: Span) -> bool {
         let start = location.start();
         let line_start = start.line - 1;
 
-        let this_line = self.src[line_start];
-
-        let beginning = if this_line.len() > start.column {
-            this_line[..start.column].trim()
-        } else {
-            ""
-        };
+        let beginning = self
+            .src
+            .get(line_start)
+            .filter(|this_line| this_line.len() > start.column)
+            .map(|this_line| this_line[..start.column].trim())
+            .unwrap_or_default();
 
         beginning.is_empty()
+    }
+
+    pub fn is_empty_children(&self, children: &[BodyNode]) -> bool {
+        children.is_empty()
     }
 
     // check if the children are short enough to be on the same line
@@ -316,7 +362,7 @@ impl Writer<'_> {
         }
 
         match children {
-            [BodyNode::Text(ref text)] => Some(text.source.as_ref().unwrap().value().len()),
+            [BodyNode::Text(ref text)] => Some(ifmt_to_string(text).len()),
             [BodyNode::Component(ref comp)] => {
                 let attr_len = self.field_len(&comp.fields, &comp.manual_props);
 
@@ -339,7 +385,7 @@ impl Writer<'_> {
 
                 if el.children.len() == 1 {
                     if let BodyNode::Text(ref text) = el.children[0] {
-                        let value = text.source.as_ref().unwrap().value();
+                        let value = ifmt_to_string(text);
 
                         if value.len() + el.name.to_string().len() + attr_len < 80 {
                             return Some(value.len() + el.name.to_string().len() + attr_len);
@@ -357,7 +403,7 @@ impl Writer<'_> {
                     match item {
                         BodyNode::Component(_) | BodyNode::Element(_) => return None,
                         BodyNode::Text(text) => {
-                            total_count += text.source.as_ref().unwrap().value().len()
+                            total_count += ifmt_to_string(text).len();
                         }
                         BodyNode::RawExpr(expr) => match get_expr_length(expr) {
                             Some(len) => total_count += len,
@@ -388,14 +434,14 @@ impl Writer<'_> {
         for idx in start.line..end.line {
             let line = &self.src[idx];
             if line.trim().starts_with("//") {
-                for _ in 0..self.out.indent + 1 {
+                for _ in 0..self.out.indent_level + 1 {
                     write!(self.out, "    ")?
                 }
                 writeln!(self.out, "{}", line.trim()).unwrap();
             }
         }
 
-        for _ in 0..self.out.indent {
+        for _ in 0..self.out.indent_level {
             write!(self.out, "    ")?
         }
 

@@ -1,45 +1,71 @@
-use std::rc::Rc;
+use dioxus_html::prelude::{EvalError, EvalProvider, Evaluator};
+use generational_box::{AnyStorage, GenerationalBox, UnsyncStorage};
 
-use crate::use_window;
-use dioxus_core::ScopeState;
-use serde::de::Error;
-use std::future::Future;
-use std::future::IntoFuture;
-use std::pin::Pin;
+use crate::{query::Query, DesktopContext};
 
-/// A future that resolves to the result of a JavaScript evaluation.
-pub struct EvalResult {
-    pub(crate) broadcast: tokio::sync::broadcast::Sender<serde_json::Value>,
+/// Reprents the desktop-target's provider of evaluators.
+pub struct DesktopEvalProvider {
+    pub(crate) desktop_ctx: DesktopContext,
 }
 
-impl EvalResult {
-    pub(crate) fn new(sender: tokio::sync::broadcast::Sender<serde_json::Value>) -> Self {
-        Self { broadcast: sender }
+impl DesktopEvalProvider {
+    pub fn new(desktop_ctx: DesktopContext) -> Self {
+        Self { desktop_ctx }
     }
 }
 
-impl IntoFuture for EvalResult {
-    type Output = Result<serde_json::Value, serde_json::Error>;
-
-    type IntoFuture = Pin<Box<dyn Future<Output = Result<serde_json::Value, serde_json::Error>>>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move {
-            let mut reciever = self.broadcast.subscribe();
-            match reciever.recv().await {
-                Ok(result) => Ok(result),
-                Err(_) => Err(serde_json::Error::custom("No result returned")),
-            }
-        }) as Pin<Box<dyn Future<Output = Result<serde_json::Value, serde_json::Error>>>>
+impl EvalProvider for DesktopEvalProvider {
+    fn new_evaluator(&self, js: String) -> GenerationalBox<Box<dyn Evaluator>> {
+        DesktopEvaluator::create(self.desktop_ctx.clone(), js)
     }
 }
 
-/// Get a closure that executes any JavaScript in the WebView context.
-pub fn use_eval(cx: &ScopeState) -> &Rc<dyn Fn(String) -> EvalResult> {
-    let desktop = use_window(cx);
-    &*cx.use_hook(|| {
-        let desktop = desktop.clone();
+/// Represents a desktop-target's JavaScript evaluator.
+pub(crate) struct DesktopEvaluator {
+    query: Query<serde_json::Value>,
+}
 
-        Rc::new(move |script: String| desktop.eval(&script)) as Rc<dyn Fn(String) -> EvalResult>
-    })
+impl DesktopEvaluator {
+    /// Creates a new evaluator for desktop-based targets.
+    pub fn create(desktop_ctx: DesktopContext, js: String) -> GenerationalBox<Box<dyn Evaluator>> {
+        let ctx = desktop_ctx.clone();
+        let query = desktop_ctx.query.new_query(&js, ctx);
+
+        // We create a generational box that is owned by the query slot so that when we drop the query slot, the generational box is also dropped.
+        let owner = UnsyncStorage::owner();
+        let query_id = query.id;
+        let query = owner.insert(Box::new(DesktopEvaluator { query }) as Box<dyn Evaluator>);
+        desktop_ctx.query.active_requests.slab.borrow_mut()[query_id].owner = Some(owner);
+
+        query
+    }
+}
+
+impl Evaluator for DesktopEvaluator {
+    fn poll_join(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<serde_json::Value, EvalError>> {
+        self.query
+            .poll_result(cx)
+            .map_err(|e| EvalError::Communication(e.to_string()))
+    }
+
+    /// Sends a message to the evaluated JavaScript.
+    fn send(&self, data: serde_json::Value) -> Result<(), EvalError> {
+        if let Err(e) = self.query.send(data) {
+            return Err(EvalError::Communication(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Gets an UnboundedReceiver to receive messages from the evaluated JavaScript.
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<serde_json::Value, EvalError>> {
+        self.query
+            .poll_recv(cx)
+            .map_err(|e| EvalError::Communication(e.to_string()))
+    }
 }
